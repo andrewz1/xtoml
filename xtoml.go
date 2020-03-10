@@ -97,21 +97,20 @@ func LoadConf(cf interface{}, conf string) (err error) {
 			}
 			fv.SetBool(vc)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			var vc int64
 			switch fv.Interface().(type) {
 			case time.Duration:
-				var vc time.Duration
-				if vc, err = cast.ToDurationE(vv); err != nil {
+				var tmp time.Duration
+				if tmp, err = cast.ToDurationE(vv); err != nil {
 					return
 				}
-				fv.SetInt(int64(vc))
-				// fv.Set(reflect.ValueOf(vc))
+				vc = int64(tmp)
 			default:
-				var vc int64
 				if vc, err = cast.ToInt64E(vv); err != nil {
 					return
 				}
-				fv.SetInt(vc)
 			}
+			fv.SetInt(vc)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			var vc uint64
 			if vc, err = cast.ToUint64E(vv); err != nil {
