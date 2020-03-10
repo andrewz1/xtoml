@@ -103,7 +103,8 @@ func LoadConf(cf interface{}, conf string) (err error) {
 				if vc, err = cast.ToDurationE(vv); err != nil {
 					return
 				}
-				fv.Set(reflect.ValueOf(vc))
+				fv.SetInt(int64(vc))
+				// fv.Set(reflect.ValueOf(vc))
 			default:
 				var vc int64
 				if vc, err = cast.ToInt64E(vv); err != nil {
