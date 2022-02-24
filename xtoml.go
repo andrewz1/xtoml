@@ -1,7 +1,7 @@
 package xtoml
 
 import (
-	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -10,153 +10,191 @@ import (
 	"github.com/spf13/cast"
 )
 
-type parser struct {
-	tr *toml.Tree
-	vv reflect.Value
-	vt reflect.Type
-	nf int
+const (
+	tagName = "conf"
+	reqName = "required"
+)
+
+type confParser struct {
+	tag string        // tag used for config
+	vv  reflect.Value // conf struct value
+	nf  int           // number fields in struct
+	tt  *toml.Tree    // conf tree
 }
 
-func (p *parser) checkType(i interface{}) (err error) {
-	v := reflect.ValueOf(i)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-		if v.Kind() == reflect.Struct {
-			p.vv = v
-			p.vt = v.Type()
-			p.nf = v.NumField()
-			return
-		}
-	}
-	err = errors.New("not a pointer to struct")
-	return
+type fieldTag struct {
+	tag string // struct field tag
+	req bool   // is field required
 }
 
-func LoadConf(cf interface{}, conf string) (err error) {
-	var (
-		tg      string
-		tgs     []string
-		ok, req bool
-		vv      interface{}
-		fv      reflect.Value
-		ft      reflect.Type
-	)
+func (f *fieldTag) required() bool {
+	return f.req
+}
 
+func (f *fieldTag) getTag() string {
+	return f.tag
+}
+
+func newParser(cf interface{}, conf, tag string) (*confParser, error) {
 	if len(conf) == 0 {
-		err = errors.New("config must be set")
-		return
+		return nil, fmt.Errorf("config must be set")
 	}
-	var tr *toml.Tree
-	if tr, err = toml.LoadFile(conf); err != nil {
-		return
+	v := reflect.ValueOf(cf)
+	if v.Kind() != reflect.Ptr {
+		return nil, fmt.Errorf("argument not a pointer")
 	}
-	p := parser{
-		tr: tr,
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("argument not a pointer to struct")
 	}
-	defer func() {
-		p.tr = nil
-	}()
-	if err = p.checkType(cf); err != nil {
-		return
+	tt, err := toml.LoadFile(conf)
+	if err != nil {
+		return nil, err
 	}
-	for i := 0; i < p.nf; i++ {
-		if tg, ok = p.vt.Field(i).Tag.Lookup("conf"); !ok {
-			continue
+	if len(tag) == 0 {
+		tag = tagName
+	}
+	return &confParser{
+		tag: tag,
+		vv:  v,
+		nf:  v.NumField(),
+		tt:  tt,
+	}, nil
+}
+
+func (c *confParser) len() int {
+	return c.nf
+}
+
+func (c *confParser) getFieldTag(n int) (*fieldTag, error) {
+	tg, ok := c.vv.Type().Field(n).Tag.Lookup(c.tag)
+	if !ok {
+		return nil, nil
+	}
+	tgs := strings.Split(tg, ",")
+	if len(tgs) < 1 {
+		return nil, fmt.Errorf("invalid tag: %s", tg)
+	}
+	tt := &fieldTag{
+		tag: tgs[0],
+	}
+	for i := 1; i < len(tgs); i++ {
+		switch tgs[i] {
+		case reqName:
+			tt.req = true
+		default:
+			return nil, fmt.Errorf("invalid tag: %s", tgs[i])
 		}
-		tgs = strings.SplitN(tg, ",", 2)
-		for _, t := range tgs {
-			if len(t) == 0 {
-				err = errors.New("invalid tag len")
-				return
-			}
+	}
+	return tt, nil
+}
+
+func (c *confParser) getField(n int) reflect.Value {
+	return c.vv.Field(n)
+}
+
+func (c *confParser) getTomlData(n int) (interface{}, *fieldTag, error) {
+	tt, err := c.getFieldTag(n)
+	if err != nil { // error in tag
+		return nil, nil, err
+	}
+	if tt == nil { // no this tag
+		return nil, nil, nil
+	}
+	if v := c.tt.Get(tt.getTag()); v != nil {
+		return v, tt, nil
+	}
+	if tt.required() {
+		return nil, nil, fmt.Errorf("field %s must be set", tt.getTag())
+	}
+	return nil, nil, nil
+}
+
+func LoadConfExt(cf interface{}, conf, tag string) error {
+	p, err := newParser(cf, conf, tag)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < p.len(); i++ {
+		vv, tt, err := p.getTomlData(i)
+		if err != nil {
+			return err
 		}
-		req = false
-		if len(tgs) == 2 {
-			if tgs[1] == "required" {
-				req = true
-			} else {
-				err = errors.New("invalid tag: " + tgs[1])
-				return
-			}
-		}
-		vv = p.tr.Get(tgs[0])
 		if vv == nil {
-			if req {
-				err = errors.New("field " + tgs[0] + " must be set")
-				return
-			}
 			continue
 		}
-		fv = p.vv.Field(i)
-		ft = fv.Type()
+		fv := p.getField(i)
 		switch fv.Kind() {
 		case reflect.Bool:
-			var vc bool
-			if vc, err = cast.ToBoolE(vv); err != nil {
-				return
+			if tmp, err := cast.ToBoolE(vv); err != nil {
+				return err
+			} else {
+				fv.SetBool(tmp)
 			}
-			fv.SetBool(vc)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			var vc int64
+			var tmp int64
 			switch fv.Interface().(type) {
 			case time.Duration:
-				var tmp time.Duration
-				if tmp, err = cast.ToDurationE(vv); err != nil {
-					return
+				if td, err := cast.ToDurationE(vv); err != nil {
+					return err
+				} else {
+					tmp = int64(td)
 				}
-				vc = int64(tmp)
 			default:
-				if vc, err = cast.ToInt64E(vv); err != nil {
-					return
+				if tmp, err = cast.ToInt64E(vv); err != nil {
+					return err
 				}
 			}
-			fv.SetInt(vc)
+			fv.SetInt(tmp)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			var vc uint64
-			if vc, err = cast.ToUint64E(vv); err != nil {
-				return
+			if tmp, err := cast.ToUint64E(vv); err != nil {
+				return err
+			} else {
+				fv.SetUint(tmp)
 			}
-			fv.SetUint(vc)
 		case reflect.Float32, reflect.Float64:
-			var vc float64
-			if vc, err = cast.ToFloat64E(vv); err != nil {
-				return
+			if tmp, err := cast.ToFloat64E(vv); err != nil {
+				return err
+			} else {
+				fv.SetFloat(tmp)
 			}
-			fv.SetFloat(vc)
 		case reflect.String:
-			var vc string
-			if vc, err = cast.ToStringE(vv); err != nil {
-				return
+			if tmp, err := cast.ToStringE(vv); err != nil {
+				return err
+			} else {
+				fv.SetString(tmp)
 			}
-			fv.SetString(vc)
 		case reflect.Slice:
-			switch ft.Elem().Kind() {
+			switch fv.Type().Elem().Kind() {
 			case reflect.String:
-				var vc []string
-				if vc, err = cast.ToStringSliceE(vv); err != nil {
-					return
+				if tmp, err := cast.ToStringSliceE(vv); err != nil {
+					return err
+				} else if tt.required() && len(tmp) == 0 {
+					return fmt.Errorf("field %s must be set", tt.getTag())
+				} else {
+					fv.Set(reflect.ValueOf(tmp))
 				}
-				fv.Set(reflect.ValueOf(vc))
 			default:
-				err = errors.New("unsupported type: " + ft.String())
-				return
+				return fmt.Errorf("unsupported type: %s", fv.Type())
 			}
 		case reflect.Struct:
 			switch fv.Interface().(type) {
 			case time.Time:
-				var vc time.Time
-				if vc, err = cast.ToTimeE(vv); err != nil {
-					return
+				if tmp, err := cast.ToTimeE(vv); err != nil {
+					return err
+				} else {
+					fv.Set(reflect.ValueOf(tmp))
 				}
-				fv.Set(reflect.ValueOf(vc))
 			default:
-				err = errors.New("unsupported type: " + ft.String())
-				return
+				return fmt.Errorf("unsupported type: %s", fv.Type())
 			}
 		default:
-			err = errors.New("unsupported type: " + ft.String())
-			return
+			return fmt.Errorf("unsupported type: %s", fv.Type())
 		}
 	}
-	return
+	return nil
+}
+
+func LoadConf(cf interface{}, conf string) error {
+	return LoadConfExt(cf, conf, tagName)
 }
