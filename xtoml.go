@@ -272,6 +272,13 @@ func (x *XArray) LoadExt(cf interface{}, tag string) error {
 	return nil
 }
 
-func (x *XArray) Load(cf interface{}, tag string) error {
+func (x *XArray) Load(cf interface{}) error {
 	return x.LoadExt(cf, tagName)
+}
+
+func (x *XArray) Next() bool {
+	if x == nil {
+		return false
+	}
+	return x.idx < len(x.tt)
 }
