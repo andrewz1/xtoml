@@ -2,6 +2,7 @@ package xtoml
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
@@ -15,6 +16,15 @@ const (
 	reqName = "required"
 )
 
+type XConf struct {
+	tt *toml.Tree
+}
+
+type XArray struct {
+	tt  []*toml.Tree
+	idx int
+}
+
 type confParser struct {
 	tag string        // tag used for config
 	vv  reflect.Value // conf struct value
@@ -22,23 +32,7 @@ type confParser struct {
 	tt  *toml.Tree    // conf tree
 }
 
-type fieldTag struct {
-	tag string // struct field tag
-	req bool   // is field required
-}
-
-func (f *fieldTag) required() bool {
-	return f.req
-}
-
-func (f *fieldTag) getTag() string {
-	return f.tag
-}
-
-func newParser(cf interface{}, conf, tag string) (*confParser, error) {
-	if len(conf) == 0 {
-		return nil, fmt.Errorf("config must be set")
-	}
+func newTreeParser(cf interface{}, tt *toml.Tree, tag string) (*confParser, error) {
 	v := reflect.ValueOf(cf)
 	if v.Kind() != reflect.Ptr {
 		return nil, fmt.Errorf("argument not a pointer")
@@ -46,10 +40,6 @@ func newParser(cf interface{}, conf, tag string) (*confParser, error) {
 	v = v.Elem()
 	if v.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("argument not a pointer to struct")
-	}
-	tt, err := toml.LoadFile(conf)
-	if err != nil {
-		return nil, err
 	}
 	if len(tag) == 0 {
 		tag = tagName
@@ -60,6 +50,17 @@ func newParser(cf interface{}, conf, tag string) (*confParser, error) {
 		nf:  v.NumField(),
 		tt:  tt,
 	}, nil
+}
+
+func newParser(cf interface{}, conf, tag string) (*confParser, error) {
+	if len(conf) == 0 {
+		return nil, fmt.Errorf("config must be set")
+	}
+	tt, err := toml.LoadFile(conf)
+	if err != nil {
+		return nil, err
+	}
+	return newTreeParser(cf, tt, tag)
 }
 
 func (c *confParser) len() int {
@@ -104,26 +105,22 @@ func (c *confParser) getTomlData(n int) (interface{}, *fieldTag, error) {
 	if v := c.tt.Get(tt.getTag()); v != nil {
 		return v, tt, nil
 	}
-	if tt.required() {
+	if tt.isRequired() {
 		return nil, nil, fmt.Errorf("field %s must be set", tt.getTag())
 	}
 	return nil, nil, nil
 }
 
-func LoadConfExt(cf interface{}, conf, tag string) error {
-	p, err := newParser(cf, conf, tag)
-	if err != nil {
-		return err
-	}
-	for i := 0; i < p.len(); i++ {
-		vv, tt, err := p.getTomlData(i)
+func (c *confParser) parseConf() error {
+	for i := 0; i < c.len(); i++ {
+		vv, tt, err := c.getTomlData(i)
 		if err != nil {
 			return err
 		}
 		if vv == nil {
 			continue
 		}
-		fv := p.getField(i)
+		fv := c.getField(i)
 		switch fv.Kind() {
 		case reflect.Bool:
 			if tmp, err := cast.ToBoolE(vv); err != nil {
@@ -169,7 +166,7 @@ func LoadConfExt(cf interface{}, conf, tag string) error {
 			case reflect.String:
 				if tmp, err := cast.ToStringSliceE(vv); err != nil {
 					return err
-				} else if tt.required() && len(tmp) == 0 {
+				} else if tt.isRequired() && len(tmp) == 0 {
 					return fmt.Errorf("field %s must be set", tt.getTag())
 				} else {
 					fv.Set(reflect.ValueOf(tmp))
@@ -195,6 +192,80 @@ func LoadConfExt(cf interface{}, conf, tag string) error {
 	return nil
 }
 
+func LoadConfExt(cf interface{}, conf, tag string) error {
+	p, err := newParser(cf, conf, tag)
+	if err != nil {
+		return err
+	}
+	return p.parseConf()
+}
+
 func LoadConf(cf interface{}, conf string) error {
 	return LoadConfExt(cf, conf, tagName)
+}
+
+func LoadConfTreeExt(cf interface{}, tt *toml.Tree, tag string) error {
+	p, err := newTreeParser(cf, tt, tag)
+	if err != nil {
+		return err
+	}
+	return p.parseConf()
+}
+
+func LoadConfTree(cf interface{}, tt *toml.Tree) error {
+	return LoadConfTreeExt(cf, tt, tagName)
+}
+
+func LoadFile(conf string) (*XConf, error) {
+	if len(conf) == 0 {
+		return nil, fmt.Errorf("config must be set")
+	}
+	tt, err := toml.LoadFile(conf)
+	if err != nil {
+		return nil, err
+	}
+	return &XConf{tt: tt}, nil
+}
+
+func (c *XConf) LoadConfExt(cf interface{}, tag string) error {
+	p, err := newTreeParser(cf, c.tt, tag)
+	if err != nil {
+		return err
+	}
+	return p.parseConf()
+}
+
+func (c *XConf) LoadConf(cf interface{}) error {
+	return c.LoadConfExt(cf, tagName)
+}
+
+func (c *XConf) LoadArray(path string) (*XArray, error) {
+	v := c.tt.Get(path)
+	if v == nil {
+		return nil, nil // this path not found
+	}
+	tt, ok := v.([]*toml.Tree)
+	if !ok {
+		return nil, fmt.Errorf("path is not an array")
+	}
+	return &XArray{tt: tt}, nil
+}
+
+func (x *XArray) LoadExt(cf interface{}, tag string) error {
+	if x == nil || x.idx >= len(x.tt) {
+		return io.EOF
+	}
+	p, err := newTreeParser(cf, x.tt[x.idx], tag)
+	if err != nil {
+		return err
+	}
+	if err = p.parseConf(); err != nil {
+		return err
+	}
+	x.idx++
+	return nil
+}
+
+func (x *XArray) Load(cf interface{}, tag string) error {
+	return x.LoadExt(cf, tagName)
 }
