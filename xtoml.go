@@ -228,6 +228,9 @@ func LoadFile(conf string) (*XConf, error) {
 }
 
 func (c *XConf) LoadConfExt(cf interface{}, tag string) error {
+	if c == nil {
+		return nil
+	}
 	p, err := newTreeParser(cf, c.tt, tag)
 	if err != nil {
 		return err
@@ -240,6 +243,9 @@ func (c *XConf) LoadConf(cf interface{}) error {
 }
 
 func (c *XConf) LoadArray(path string) (*XArray, error) {
+	if c == nil {
+		return nil, nil
+	}
 	v := c.tt.Get(path)
 	if v == nil {
 		return nil, nil // this path not found
