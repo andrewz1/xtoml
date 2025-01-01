@@ -3,6 +3,7 @@ package xtoml
 import (
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -225,6 +226,30 @@ func LoadFile(conf string) (*XConf, error) {
 		return nil, err
 	}
 	return &XConf{tt: tt}, nil
+}
+
+func EmptyConf() *XConf {
+	tt, err := toml.LoadBytes([]byte{})
+	if err != nil {
+		panic(err)
+	}
+	return &XConf{tt: tt}
+}
+
+func LoadFileIfExist(conf string) *XConf {
+	if len(conf) == 0 {
+		return EmptyConf()
+	}
+	f, err := os.Open(conf)
+	if err != nil {
+		return EmptyConf()
+	}
+	defer f.Close()
+	tt, err := toml.LoadReader(f)
+	if err != nil {
+		return EmptyConf()
+	}
+	return &XConf{tt: tt}
 }
 
 func (c *XConf) LoadConfExt(cf interface{}, tag string) error {
